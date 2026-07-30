@@ -10,7 +10,6 @@ const elements = {
   memory: $("memory"),
   cores: $("cores"),
   diskSize: $("disk-size"),
-  diskFormat: $("disk-format"),
   iso: $("iso"),
   isoName: $("iso-name"),
   diskImage: $("disk-image"),
@@ -29,11 +28,43 @@ const elements = {
 };
 
 const presets = {
-  tiny11: { memory: 1280, cores: 2, disk: 64, hint: "Tiny11 still needs patience. A clean installation can take a long time in browser emulation." },
-  tiny10: { memory: 1024, cores: 2, disk: 32, hint: "Tiny10 is the more realistic Windows choice for a browser VM." },
-  ubuntu: { memory: 1024, cores: 2, disk: 32, hint: "Try the live session first. Installing the full desktop is much slower." },
-  zorin: { memory: 1280, cores: 2, disk: 32, hint: "Zorin's desktop is heavy. Zorin Lite is the friendlier ISO for this emulator." },
-  custom: { memory: 1024, cores: 2, disk: 32, hint: "Use a 64-bit x86 ISO. ARM64 images won't boot in this machine." }
+  debian: {
+    memory: 768,
+    cores: 1,
+    disk: 16,
+    premade: true,
+    hint: "Debian 13 boots from an official ready-made disk. First start downloads about 420 MB into this browser."
+  },
+  tiny11: {
+    memory: 1280,
+    cores: 2,
+    disk: 64,
+    hint: "Tiny11 still needs patience. A clean installation can take a long time in browser emulation."
+  },
+  tiny10: {
+    memory: 1024,
+    cores: 2,
+    disk: 32,
+    hint: "Tiny10 is the more realistic Windows choice for a browser VM."
+  },
+  ubuntu: {
+    memory: 1024,
+    cores: 2,
+    disk: 32,
+    hint: "Try the live session first. Installing the full desktop is much slower."
+  },
+  zorin: {
+    memory: 1280,
+    cores: 2,
+    disk: 32,
+    hint: "Zorin's desktop is heavy. Zorin Lite is the friendlier ISO for this emulator."
+  },
+  custom: {
+    memory: 1024,
+    cores: 2,
+    disk: 32,
+    hint: "Use a 64-bit x86 ISO. ARM64 images won't boot in this machine."
+  }
 };
 
 const romNames = [
@@ -46,6 +77,7 @@ const romNames = [
 let supported = false;
 let storageWorker = null;
 let vmStarted = false;
+let hasSavedDisk = false;
 
 function setStatus(message, state = "") {
   elements.status.textContent = message;
@@ -82,25 +114,41 @@ function formatBytes(bytes) {
   return `${value.toFixed(unit < 2 ? 0 : 1)} ${units[unit]}`;
 }
 
+function updateStartButton() {
+  const iso = elements.iso.files[0];
+  const disk = elements.diskImage.files[0];
+  const premade = Boolean(presets[elements.preset.value].premade);
+  elements.start.disabled =
+    !supported || (!premade && !iso && !disk && !hasSavedDisk);
+}
+
 function updatePreset() {
   const preset = presets[elements.preset.value];
   const deviceMemory = Number(navigator.deviceMemory || 8);
   const memoryLimit = deviceMemory <= 4 ? 768 : deviceMemory <= 6 ? 1024 : 1536;
   elements.memory.value = String(Math.min(preset.memory, memoryLimit));
-  elements.cores.value = String(Math.min(preset.cores, Math.max(1, navigator.hardwareConcurrency || 2)));
+  elements.cores.value = String(Math.min(
+    preset.cores,
+    Math.max(1, navigator.hardwareConcurrency || 2)
+  ));
   elements.diskSize.value = String(preset.disk);
   elements.hint.textContent = preset.hint;
+  if (preset.premade && elements.vmName.value === "main") {
+    elements.vmName.value = "debian";
+  }
+  refreshSavedDisk();
 }
 
 function updateFiles() {
   const iso = elements.iso.files[0];
   const disk = elements.diskImage.files[0];
-  elements.isoName.textContent = iso ? `${iso.name} (${formatBytes(iso.size)})` : "Choose ISO";
-  elements.diskName.textContent = disk ? `${disk.name} (${formatBytes(disk.size)})` : "Choose QCOW2 / IMG";
-  if (disk) {
-    elements.diskFormat.value = disk.name.toLowerCase().endsWith(".qcow2") ? "qcow2" : "raw";
-  }
-  elements.start.disabled = !supported || (!iso && !disk);
+  elements.isoName.textContent = iso
+    ? `${iso.name} (${formatBytes(iso.size)})`
+    : "Choose ISO";
+  elements.diskName.textContent = disk
+    ? `${disk.name} (${formatBytes(disk.size)})`
+    : "Choose QCOW2 / IMG";
+  updateStartButton();
 }
 
 async function updateStorage() {
@@ -124,20 +172,44 @@ async function getDiskFile(create = false) {
   }
 }
 
+async function refreshSavedDisk() {
+  try {
+    const disk = await getDiskFile(false);
+    hasSavedDisk = Boolean(disk?.file?.size);
+  } catch {
+    hasSavedDisk = false;
+  }
+  updateStartButton();
+}
+
+async function detectDiskFormat(file) {
+  const magic = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return magic.length === 4 &&
+    magic[0] === 0x51 &&
+    magic[1] === 0x46 &&
+    magic[2] === 0x49 &&
+    magic[3] === 0xfb
+    ? "qcow2"
+    : "raw";
+}
+
 async function importDisk(file) {
   elements.start.disabled = true;
   setStatus(`Importing ${file.name}...`);
+  const format = await detectDiskFormat(file);
   const { handle } = await getDiskFile(true);
   const writable = await handle.createWritable();
   await file.stream().pipeTo(writable);
-  localStorage.setItem(`${diskKey()}:format`, elements.diskFormat.value);
-  setStatus("Disk imported", "ready");
+  localStorage.setItem(`${diskKey()}:format`, format);
+  hasSavedDisk = true;
+  setStatus(`${format.toUpperCase()} disk imported`, "ready");
+  return format;
 }
 
 async function exportDisk() {
   try {
     const disk = await getDiskFile(false);
-    if (!disk) {
+    if (!disk?.file?.size) {
       setStatus("No saved disk exists for this VM", "error");
       return;
     }
@@ -161,11 +233,15 @@ async function resetDisk() {
     const root = await navigator.storage.getDirectory();
     await root.removeEntry(diskKey());
     localStorage.removeItem(`${diskKey()}:format`);
+    hasSavedDisk = false;
     setStatus("Saved disk deleted", "ready");
     await updateStorage();
+    updateStartButton();
   } catch (error) {
     if (error.name === "NotFoundError") {
+      hasSavedDisk = false;
       setStatus("There was no saved disk to delete", "ready");
+      updateStartButton();
       return;
     }
     console.error(error);
@@ -173,11 +249,15 @@ async function resetDisk() {
   }
 }
 
-function workerRequest(worker, message) {
+function workerRequest(worker, message, onProgress) {
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID();
     const onMessage = (event) => {
       if (event.data?.requestId !== requestId) return;
+      if (event.data.progress) {
+        onProgress?.(event.data.progress);
+        return;
+      }
       worker.removeEventListener("message", onMessage);
       if (event.data.error) reject(new Error(event.data.error));
       else resolve(event.data);
@@ -195,7 +275,32 @@ async function loadRoms() {
   }));
 }
 
-function qemuArguments({ iso, diskFormat }) {
+async function loadDebianSeed() {
+  const response = await fetch("./engine/disks/debian-seed.iso");
+  if (!response.ok) {
+    throw new Error(`Missing Debian setup disk (${response.status})`);
+  }
+  return response.blob();
+}
+
+async function loadDebianDiskManifest() {
+  const response = await fetch("./engine/disks/debian/manifest.json");
+  if (!response.ok) {
+    throw new Error(`Missing Debian disk manifest (${response.status})`);
+  }
+  const manifest = await response.json();
+  if (!Array.isArray(manifest.parts) || !manifest.parts.length) {
+    throw new Error("The Debian disk manifest has no parts");
+  }
+  return {
+    total: Number(manifest.size || 0),
+    urls: manifest.parts.map((part) =>
+      new URL(`./engine/disks/debian/${part}`, location.href).href
+    )
+  };
+}
+
+function qemuArguments({ iso, seed, diskFormat }) {
   const memory = Number(elements.memory.value);
   const cores = Number(elements.cores.value);
   const phone = matchMedia("(max-width: 760px)").matches;
@@ -210,12 +315,22 @@ function qemuArguments({ iso, diskFormat }) {
     "-L", "/v64/rom",
     "-vga", "std",
     "-device", "usb-tablet",
-    "-nic", "none",
+    "-netdev", "user,id=v64net,restrict=on",
+    "-device", "e1000,netdev=v64net,romfile=",
     "-rtc", "base=localtime",
-    "-drive", `file=/v64/disk.img,format=${diskFormat},if=ide,cache=writeback`
+    "-drive", `file=/v64/disk.img,format=${diskFormat},if=ide,index=0,cache=writeback,aio=threads`
   ];
+
   if (iso) {
-    args.push("-cdrom", "/v64/installer.iso", "-boot", "order=d,menu=on");
+    args.push(
+      "-drive", "file=/v64/installer.iso,media=cdrom,readonly=on,if=ide,index=2",
+      "-boot", "order=d,menu=on"
+    );
+  } else if (seed) {
+    args.push(
+      "-drive", "file=/v64/debian-seed.iso,media=cdrom,readonly=on,if=ide,index=2",
+      "-boot", "order=c,menu=on"
+    );
   } else {
     args.push("-boot", "order=c,menu=on");
   }
@@ -226,8 +341,10 @@ async function startVm() {
   if (vmStarted) return;
   const iso = elements.iso.files[0] || null;
   const diskImport = elements.diskImage.files[0] || null;
+  const preset = presets[elements.preset.value];
+  const wantsDebian = Boolean(preset.premade && !iso && !diskImport);
   let diskFormat = diskImport
-    ? elements.diskFormat.value
+    ? null
     : localStorage.getItem(`${diskKey()}:format`) || "qcow2";
 
   vmStarted = true;
@@ -238,32 +355,71 @@ async function startVm() {
 
   try {
     if (diskImport) {
-      await importDisk(diskImport);
-      diskFormat = elements.diskFormat.value;
+      diskFormat = await importDisk(diskImport);
     }
 
     await navigator.storage.persist?.();
     storageWorker = new Worker("./storage-worker.js", { type: "module" });
+    storageWorker.addEventListener("message", (event) => {
+      if (event.data?.type !== "disk-error") return;
+      appendLog(`Disk error: ${event.data.error}`);
+      elements.runStatus.textContent = "Virtual disk error";
+    });
+
+    const existingDisk = await getDiskFile(false);
+    let seedUrls = [];
+    let seedTotal = 0;
+    if (!existingDisk?.file?.size) {
+      if (wantsDebian) {
+        const manifest = await loadDebianDiskManifest();
+        seedUrls = manifest.urls;
+        seedTotal = manifest.total;
+      } else {
+        seedUrls = [
+          new URL(
+            `./engine/disks/blank-${elements.diskSize.value}g.qcow2`,
+            location.href
+          ).href
+        ];
+      }
+    }
+
     const prepared = await workerRequest(storageWorker, {
       cmd: "prepare",
       diskKey: diskKey(),
-      seedUrl: `./engine/disks/blank-${elements.diskSize.value}g.qcow2`,
-      useSeed: diskFormat === "qcow2"
+      seedUrls,
+      seedTotal,
+      expectedFormat: diskFormat
+    }, ({ loaded, total }) => {
+      const percent = total ? Math.round(loaded * 100 / total) : 0;
+      setStatus(`Preparing disk... ${percent}%`);
     });
 
+    diskFormat = prepared.format;
+    localStorage.setItem(`${diskKey()}:format`, diskFormat);
+    hasSavedDisk = true;
+
     setStatus("Loading graphical x86_64 engine...");
-    const roms = await loadRoms();
+    const [roms, debianSeed] = await Promise.all([
+      loadRoms(),
+      wantsDebian ? loadDebianSeed() : Promise.resolve(null)
+    ]);
+
     const moduleConfig = {
-      arguments: qemuArguments({ iso, diskFormat }),
+      arguments: qemuArguments({ iso, seed: debianSeed, diskFormat }),
       canvas: elements.canvas,
       v64ISO: iso,
+      v64Seed: debianSeed,
       v64Roms: roms,
       v64DiskSize: prepared.size,
       v64StorageWorker: storageWorker,
       locateFile(path) {
         return new URL(`./engine/${path}`, location.href).href;
       },
-      mainScriptUrlOrBlob: new URL("./engine/qemu-system-x86_64.js", location.href).href,
+      mainScriptUrlOrBlob: new URL(
+        "./engine/qemu-system-x86_64.js",
+        location.href
+      ).href,
       print(...args) {
         appendLog(args.join(" "));
       },
@@ -287,17 +443,21 @@ async function startVm() {
     elements.vmShell.classList.remove("hidden");
     elements.runStatus.textContent = "Starting x86_64 machine...";
 
-    const { default: initQemu } = await import("./engine/qemu-system-x86_64.js");
+    const { default: initQemu } = await import(
+      "./engine/qemu-system-x86_64.js"
+    );
     await initQemu(moduleConfig);
   } catch (error) {
     console.error(error);
     vmStarted = false;
+    storageWorker?.terminate();
+    storageWorker = null;
     elements.setup.classList.remove("hidden");
     elements.vmShell.classList.add("hidden");
-    elements.start.disabled = false;
     elements.exportDisk.disabled = false;
     elements.resetDisk.disabled = false;
     setStatus(`Start failed: ${error.message || error}`, "error");
+    await refreshSavedDisk();
   }
 }
 
@@ -315,20 +475,24 @@ async function checkSupport() {
 
   if (missing.length) {
     setStatus(`Unsupported browser: missing ${missing.join(", ")}`, "error");
-    elements.hint.textContent = "Use a current Chromium-based browser. Firefox isn't reliable with this graphical QEMU build.";
+    elements.hint.textContent =
+      "Use a current Chromium-based browser. Firefox isn't reliable with this graphical QEMU build.";
     return;
   }
 
   supported = true;
   setStatus("Browser ready", "ready");
   updateFiles();
-  await updateStorage();
+  await Promise.all([updateStorage(), refreshSavedDisk()]);
 }
 
 elements.preset.addEventListener("change", updatePreset);
 elements.iso.addEventListener("change", updateFiles);
 elements.diskImage.addEventListener("change", updateFiles);
-elements.vmName.addEventListener("input", updateStorage);
+elements.vmName.addEventListener("input", () => {
+  updateStorage();
+  refreshSavedDisk();
+});
 elements.start.addEventListener("click", startVm);
 elements.exportDisk.addEventListener("click", exportDisk);
 elements.resetDisk.addEventListener("click", resetDisk);

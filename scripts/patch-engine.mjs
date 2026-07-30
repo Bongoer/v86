@@ -21,6 +21,19 @@ replaceOnce(
   "var startWorker;\n\nif (ENVIRONMENT_IS_PTHREAD) {",
   `var startWorker;
 var v64WorkerConfig = null;
+var v64PreopenedFiles = Object.create(null);
+var v64PreopenedFds = new Set();
+
+function v64Preopen(path, flags) {
+  var stream = FS.open(path, flags);
+  v64PreopenedFiles[path] = stream.fd;
+  v64PreopenedFds.add(stream.fd);
+  return stream.fd;
+}
+
+function v64IsPreopenedFD(fd) {
+  return v64PreopenedFds.has(fd);
+}
 
 function v64CreateBlobFile(parent, name, blob, canWrite) {
   var node = FS.createFile(parent, name, {}, true, canWrite);
@@ -209,7 +222,12 @@ function v64InitWorkerFS(config) {
     FS.createDataFile("/v64/rom", rom.name, rom.bytes, true, false, true);
   }
   if (config.iso) v64CreateBlobFile("/v64", "installer.iso", config.iso, false);
+  if (config.seed) v64CreateBlobFile("/v64", "debian-seed.iso", config.seed, false);
   if (config.diskPort) v64CreateDiskFile("/v64", "disk.img", config.diskPort, config.diskSize || 0);
+  for (var rom of config.roms || []) v64Preopen("/v64/rom/" + rom.name, "r");
+  if (config.iso) v64Preopen("/v64/installer.iso", "r");
+  if (config.seed) v64Preopen("/v64/debian-seed.iso", "r");
+  if (config.diskPort) v64Preopen("/v64/disk.img", "r+");
 }
 
 if (ENVIRONMENT_IS_PTHREAD) {`,
@@ -241,6 +259,7 @@ replaceOnce(
     }
     var v64Config = {
       iso: Module["v64ISO"] || null,
+      seed: Module["v64Seed"] || null,
       roms: Module["v64Roms"] || [],
       diskSize: Module["v64DiskSize"] || 0,
       diskPort: diskChannel ? diskChannel.port2 : null
@@ -254,6 +273,18 @@ replaceOnce(
       v64Config
     }, transfer);`,
   "send VM configuration"
+);
+
+replaceOnce(
+  `    path = SYSCALLS.calculateAt(dirfd, path);
+    var mode = varargs ? syscallGetVarargI() : 0;
+    return FS.open(path, flags, mode).fd;`,
+  `    path = SYSCALLS.calculateAt(dirfd, path);
+    var v64FD = v64PreopenedFiles[path];
+    if (v64FD !== undefined) return v64FD;
+    var mode = varargs ? syscallGetVarargI() : 0;
+    return FS.open(path, flags, mode).fd;`,
+  "reuse deterministic file descriptors"
 );
 
 const localFunctions = new Set([
@@ -288,6 +319,17 @@ for (const name of localFunctions) {
 if (removed !== localFunctions.size) {
   throw new Error(`Expected ${localFunctions.size} local proxies, removed ${removed}`);
 }
+
+replaceOnce(
+  `function _fd_close(fd) {
+  try {
+    var stream = SYSCALLS.getStreamFromFD(fd);`,
+  `function _fd_close(fd) {
+  try {
+    if (v64IsPreopenedFD(fd)) return 0;
+    var stream = SYSCALLS.getStreamFromFD(fd);`,
+  "keep shared virtual files open"
+);
 
 if (source === original) throw new Error("Engine wasn't changed");
 fs.writeFileSync(target, source);

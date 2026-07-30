@@ -19,4 +19,13 @@ It is distributed under the MIT License.
 
 ## Operating systems
 
-This repository contains no Windows, Tiny10, Tiny11, Ubuntu, Zorin OS, or other operating-system ISO or disk image. Users must provide their own files and comply with the applicable licenses.
+The deployment workflow downloads Debian's official generic amd64 cloud image
+and publishes it as a ready-to-boot option. Debian is made of free and
+open-source software under its component licenses:
+
+- https://www.debian.org/legal/licenses/
+- https://cloud.debian.org/images/cloud/
+
+This repository contains no Windows, Tiny10, Tiny11, Ubuntu, Zorin OS, or other
+operating-system ISO. Users must provide those files and comply with the
+applicable licenses.

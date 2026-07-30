@@ -1,4 +1,4 @@
-name: Deploy v64
+name: Build v64
 
 on:
   push:
@@ -8,12 +8,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: v64-build
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Fetch pinned graphical x86_64 engine
         shell: bash
@@ -52,29 +50,142 @@ jobs:
           cp "$engine_source/pc-bios/linuxboot_dma.bin" _site/engine/rom/
           cp "$engine_source/COPYING" _site/QEMU-COPYING.txt
 
-      - name: Add large ISO and persistent disk support
+      - name: Patch cross-worker storage
         shell: bash
         run: |
           set -euo pipefail
           node scripts/patch-engine.mjs _site/engine/qemu-system-x86_64.js
 
-      - name: Create sparse blank disks
+      - name: Install image tools
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v qemu-img >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y qemu-utils
-          fi
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils genisoimage
+
+      - name: Create blank install disks
+        shell: bash
+        run: |
+          set -euo pipefail
           for size in 16 32 64; do
             qemu-img create -f qcow2 "_site/engine/disks/blank-${size}g.qcow2" "${size}G"
+            qemu-img check -f qcow2 "_site/engine/disks/blank-${size}g.qcow2"
           done
 
-      - name: Prepare site
+      - name: Add verified Debian 13 disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          debian_url="https://cloud.debian.org/images/cloud/trixie/latest"
+          debian_name="debian-13-generic-amd64.qcow2"
+          debian_file="$RUNNER_TEMP/$debian_name"
+          checksum_file="$RUNNER_TEMP/SHA512SUMS"
+          debian_parts="_site/engine/disks/debian"
+
+          curl --fail --location --retry 3 --output "$debian_file" "$debian_url/$debian_name"
+          curl --fail --location --retry 3 --output "$checksum_file" "$debian_url/SHA512SUMS"
+          grep "  $debian_name$" "$checksum_file" |
+            sed "s#  $debian_name\$#  $debian_file#" |
+            sha512sum --check -
+          qemu-img check -f qcow2 "$debian_file"
+
+          mkdir -p "$debian_parts"
+          split --bytes=80M --numeric-suffixes=0 --suffix-length=3 \
+            "$debian_file" "$debian_parts/disk.part-"
+
+          DEBIAN_FILE="$debian_file" DEBIAN_PARTS="$debian_parts" python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ["DEBIAN_FILE"])
+          parts_dir = Path(os.environ["DEBIAN_PARTS"])
+          parts = sorted(parts_dir.glob("disk.part-*"))
+
+          def file_digest(path):
+              result = hashlib.sha512()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      result.update(chunk)
+              return result.hexdigest()
+
+          digest = hashlib.sha512()
+          for part in parts:
+              with part.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+
+          expected = file_digest(source)
+          if digest.hexdigest() != expected:
+              raise SystemExit("Split Debian disk checksum mismatch")
+          if any(part.stat().st_size >= 100 * 1024 * 1024 for part in parts):
+              raise SystemExit("A Debian disk part exceeds GitHub's file limit")
+
+          manifest = {
+              "format": "qcow2",
+              "size": source.stat().st_size,
+              "sha512": expected,
+              "parts": [part.name for part in parts],
+          }
+          (parts_dir / "manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Create Debian first-boot setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          seed_dir="$RUNNER_TEMP/debian-seed"
+          mkdir -p "$seed_dir"
+          python3 - "$seed_dir" <<'PY'
+          from pathlib import Path
+          import sys
+
+          target = Path(sys.argv[1])
+          target.joinpath("meta-data").write_text(
+              "instance-id: v64-debian-13\nlocal-hostname: v64-debian\n",
+              encoding="utf-8",
+          )
+          target.joinpath("user-data").write_text(
+              """#cloud-config
+          hostname: v64-debian
+          manage_etc_hosts: true
+          ssh_pwauth: true
+          chpasswd:
+            expire: false
+            users:
+              - name: debian
+                password: debian
+                type: text
+          final_message: "v64 Debian is ready. Login: debian / debian"
+          """,
+              encoding="utf-8",
+          )
+          target.joinpath("network-config").write_text(
+              """version: 2
+          ethernets:
+            v64:
+              match:
+                name: "e*"
+              dhcp4: true
+              optional: true
+          """,
+              encoding="utf-8",
+          )
+          PY
+          genisoimage -quiet -output _site/engine/disks/debian-seed.iso \
+            -volid cidata -joliet -rock \
+            "$seed_dir/user-data" "$seed_dir/meta-data" "$seed_dir/network-config"
+
+      - name: Prepare and validate site
         shell: bash
         run: |
           set -euo pipefail
           cp index.html app.js storage-worker.js style.css coi-serviceworker.js .nojekyll _site/
+          cp LICENSE THIRD_PARTY_NOTICES.md _site/
           node --check storage-worker.js
           cp app.js "$RUNNER_TEMP/app.mjs"
           node --check "$RUNNER_TEMP/app.mjs"
@@ -82,22 +193,31 @@ jobs:
           node --check "$RUNNER_TEMP/qemu-system-x86_64.mjs"
           test -s _site/engine/qemu-system-x86_64.wasm
           test -s _site/engine/disks/blank-64g.qcow2
+          test -s _site/engine/disks/debian/manifest.json
+          test -s _site/engine/disks/debian-seed.iso
+          test "$(find _site/engine/disks/debian -name 'disk.part-*' | wc -l)" -ge 5
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v6
+      - name: Publish gh-pages branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_dir="$RUNNER_TEMP/gh-pages"
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: _site
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch --depth=1 origin gh-pages:refs/remotes/origin/gh-pages
+            git worktree add --detach "$deploy_dir" refs/remotes/origin/gh-pages
+          else
+            git worktree add --detach "$deploy_dir"
+            git -C "$deploy_dir" checkout --orphan gh-pages
+          fi
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+          find "$deploy_dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
+          cp -a _site/. "$deploy_dir"/
+
+          git -C "$deploy_dir" config user.name "github-actions[bot]"
+          git -C "$deploy_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$deploy_dir" add -A
+          if ! git -C "$deploy_dir" diff --cached --quiet; then
+            git -C "$deploy_dir" commit -m "Deploy v64"
+          fi
+          git -C "$deploy_dir" push --force origin HEAD:gh-pages

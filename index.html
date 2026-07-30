@@ -27,6 +27,7 @@
         <label>
           <span>System preset</span>
           <select id="preset">
+            <option value="debian">Debian 13 ready-to-boot</option>
             <option value="tiny11">Tiny11</option>
             <option value="tiny10">Tiny10</option>
             <option value="ubuntu">Ubuntu 64-bit</option>
@@ -69,13 +70,6 @@
           </select>
         </label>
 
-        <label>
-          <span>Disk format</span>
-          <select id="disk-format">
-            <option value="qcow2">QCOW2</option>
-            <option value="raw">RAW / IMG</option>
-          </select>
-        </label>
       </div>
 
       <div class="file-row">
@@ -127,7 +121,9 @@
     </section>
 
     <section class="notes">
-      <p><strong>Nothing is bundled:</strong> Tiny10, Tiny11, Ubuntu, Zorin, and other operating systems must be supplied by the user as an ISO.</p>
+      <p><strong>Debian is ready:</strong> the Debian 13 option downloads an official bootable disk on first use.</p>
+      <p><strong>Other systems aren't bundled:</strong> Tiny10, Tiny11, Ubuntu, Zorin, and custom systems must be supplied by the user as an ISO.</p>
+      <p><strong>No internet:</strong> the VM network is isolated and only supplies local DHCP for faster Linux boots.</p>
       <p>Chromium is recommended. A browser VM is much slower than UTM, VirtualBox, or native QEMU.</p>
     </section>
   </main>
