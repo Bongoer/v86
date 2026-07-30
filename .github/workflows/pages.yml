@@ -1,0 +1,103 @@
+name: Deploy v64
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Fetch pinned graphical x86_64 engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          engine_source="$RUNNER_TEMP/qemu-graphics"
+          git init "$engine_source"
+          git -C "$engine_source" remote add origin https://github.com/zb3/qemu-wasm-test.git
+          git -C "$engine_source" config core.sparseCheckout true
+          {
+            echo "/docs/qemu-system-x86_64.js"
+            echo "/docs/qemu-system-x86_64.wasm"
+            echo "/pc-bios/bios-256k.bin"
+            echo "/pc-bios/vgabios-stdvga.bin"
+            echo "/pc-bios/kvmvapic.bin"
+            echo "/pc-bios/linuxboot_dma.bin"
+            echo "/COPYING"
+          } > "$engine_source/.git/info/sparse-checkout"
+          git -C "$engine_source" fetch --depth=1 origin b6728db2ef78fb183cb57e379df64529596bea41
+          git -C "$engine_source" checkout --detach FETCH_HEAD
+
+          mkdir -p _site/engine/rom _site/engine/disks
+          cp "$engine_source/docs/qemu-system-x86_64.js" _site/engine/
+          cp "$engine_source/docs/qemu-system-x86_64.wasm" _site/engine/
+          cp "$engine_source/pc-bios/bios-256k.bin" _site/engine/rom/
+          cp "$engine_source/pc-bios/vgabios-stdvga.bin" _site/engine/rom/
+          cp "$engine_source/pc-bios/kvmvapic.bin" _site/engine/rom/
+          cp "$engine_source/pc-bios/linuxboot_dma.bin" _site/engine/rom/
+          cp "$engine_source/COPYING" _site/QEMU-COPYING.txt
+
+      - name: Add large ISO and persistent disk support
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/patch-engine.mjs _site/engine/qemu-system-x86_64.js
+
+      - name: Create sparse blank disks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v qemu-img >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y qemu-utils
+          fi
+          for size in 16 32 64; do
+            qemu-img create -f qcow2 "_site/engine/disks/blank-${size}g.qcow2" "${size}G"
+          done
+
+      - name: Prepare site
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp index.html app.js storage-worker.js style.css coi-serviceworker.js .nojekyll _site/
+          node --check storage-worker.js
+          cp app.js "$RUNNER_TEMP/app.mjs"
+          node --check "$RUNNER_TEMP/app.mjs"
+          cp _site/engine/qemu-system-x86_64.js "$RUNNER_TEMP/qemu-system-x86_64.mjs"
+          node --check "$RUNNER_TEMP/qemu-system-x86_64.mjs"
+          test -s _site/engine/qemu-system-x86_64.wasm
+          test -s _site/engine/disks/blank-64g.qcow2
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
