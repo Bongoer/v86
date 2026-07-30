@@ -1,0 +1,13 @@
+{
+  "format": "qcow2",
+  "size": 436076544,
+  "sha512": "1ff07be8406c4abcb75662a351b6124408c4a2795801037f8e4fe9ee27084ee2112bef92222f4bbeb9f7df8df1062971a9692f4c82f3da3c01fda6b1493906b9",
+  "parts": [
+    "disk.part-000",
+    "disk.part-001",
+    "disk.part-002",
+    "disk.part-003",
+    "disk.part-004",
+    "disk.part-005"
+  ]
+}

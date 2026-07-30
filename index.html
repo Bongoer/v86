@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#11151b">
+  <title>v64 - 64-bit browser VM</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <h1>v64</h1>
+        <p>Boot your own 64-bit ISO in the browser</p>
+      </div>
+      <span class="chip">QEMU Wasm</span>
+    </header>
+
+    <section class="setup" id="setup">
+      <div class="compat" id="compat">
+        <span class="status-light" id="status-light"></span>
+        <span id="status">Checking browser support...</span>
+      </div>
+
+      <div class="grid">
+        <label>
+          <span>System preset</span>
+          <select id="preset">
+            <option value="debian">Debian 13 ready-to-boot</option>
+            <option value="tiny11">Tiny11</option>
+            <option value="tiny10">Tiny10</option>
+            <option value="ubuntu">Ubuntu 64-bit</option>
+            <option value="zorin">Zorin OS 64-bit</option>
+            <option value="custom">Custom 64-bit ISO</option>
+          </select>
+        </label>
+
+        <label>
+          <span>VM name</span>
+          <input id="vm-name" value="main" maxlength="32" autocomplete="off" spellcheck="false">
+        </label>
+
+        <label>
+          <span>Memory</span>
+          <select id="memory">
+            <option value="512">512 MB</option>
+            <option value="768">768 MB</option>
+            <option value="1024">1 GB</option>
+            <option value="1280">1.25 GB</option>
+            <option value="1536">1.5 GB</option>
+          </select>
+        </label>
+
+        <label>
+          <span>CPU cores</span>
+          <select id="cores">
+            <option value="1">1 core</option>
+            <option value="2">2 cores</option>
+            <option value="4">4 cores</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Virtual disk</span>
+          <select id="disk-size">
+            <option value="16">16 GB</option>
+            <option value="32">32 GB</option>
+            <option value="64">64 GB</option>
+          </select>
+        </label>
+
+      </div>
+
+      <div class="file-row">
+        <label class="file-picker">
+          <span>Installer or live ISO</span>
+          <input id="iso" type="file" accept=".iso,application/x-iso9660-image">
+          <strong id="iso-name">Choose ISO</strong>
+          <small>The ISO never uploads to the website.</small>
+        </label>
+
+        <label class="file-picker">
+          <span>Existing disk image (optional)</span>
+          <input id="disk-image" type="file" accept=".qcow2,.img,.raw,application/octet-stream">
+          <strong id="disk-name">Choose QCOW2 / IMG</strong>
+          <small>Replaces this VM's browser disk before boot.</small>
+        </label>
+      </div>
+
+      <div class="storage-line">
+        <span id="storage">Checking storage...</span>
+        <button id="export-disk" class="secondary" type="button">Export disk</button>
+        <button id="reset-disk" class="danger" type="button">Reset disk</button>
+      </div>
+
+      <div class="actions">
+        <button id="start" type="button" disabled>Start VM</button>
+      </div>
+
+      <div class="hint" id="hint"></div>
+    </section>
+
+    <section class="vm-shell hidden" id="vm-shell">
+      <div class="toolbar">
+        <div class="compat">
+          <span class="status-light running"></span>
+          <span id="run-status">Starting VM...</span>
+        </div>
+        <div class="controls">
+          <button id="keyboard" type="button">Keyboard</button>
+          <button id="fullscreen" type="button">Fullscreen</button>
+          <button id="restart" type="button">Restart</button>
+        </div>
+      </div>
+
+      <div class="screen-wrap">
+        <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+      </div>
+      <pre id="log" aria-live="polite"></pre>
+    </section>
+
+    <section class="notes">
+      <p><strong>Debian is ready:</strong> the Debian 13 option downloads an official bootable disk on first use.</p>
+      <p><strong>Other systems aren't bundled:</strong> Tiny10, Tiny11, Ubuntu, Zorin, and custom systems must be supplied by the user as an ISO.</p>
+      <p><strong>No internet:</strong> the VM network is isolated and only supplies local DHCP for faster Linux boots.</p>
+      <p>Chromium is recommended. A browser VM is much slower than UTM, VirtualBox, or native QEMU.</p>
+    </section>
+  </main>
+
+  <script src="./coi-serviceworker.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
