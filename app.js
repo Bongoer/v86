@@ -1,3 +1,5 @@
+globalThis.__v64AppStarted = true;
+
 const $ = (id) => document.getElementById(id);
 
 const elements = {
@@ -462,28 +464,72 @@ async function startVm() {
 }
 
 async function checkSupport() {
-  if (!globalThis.crossOriginIsolated) {
-    setStatus("Enabling browser isolation, the page may reload once...");
-    return;
-  }
+  const reloadKey = "v64-isolation-reloads";
 
-  const missing = [];
-  if (!globalThis.SharedArrayBuffer) missing.push("SharedArrayBuffer");
-  if (!globalThis.OffscreenCanvas) missing.push("OffscreenCanvas");
-  if (!navigator.storage?.getDirectory) missing.push("OPFS storage");
-  if (!globalThis.Worker) missing.push("Web Workers");
+  try {
+    if (!globalThis.crossOriginIsolated) {
+      if (!globalThis.isSecureContext) {
+        throw new Error("This page must be opened over HTTPS");
+      }
+      if (!navigator.serviceWorker) {
+        throw new Error(
+          "This browser blocks service workers. Open the site directly in Chrome."
+        );
+      }
 
-  if (missing.length) {
-    setStatus(`Unsupported browser: missing ${missing.join(", ")}`, "error");
+      setStatus("Enabling 64-bit browser support...");
+      await navigator.serviceWorker.register("./coi-serviceworker.js", {
+        scope: "./",
+        updateViaCache: "none"
+      });
+
+      await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((_, reject) => {
+          setTimeout(
+            () => reject(new Error("Browser setup timed out")),
+            12000
+          );
+        })
+      ]);
+
+      const reloads = Number(sessionStorage.getItem(reloadKey) || 0);
+      if (reloads >= 2) {
+        throw new Error(
+          "Browser isolation couldn't start. Open the site directly in Chrome, not an in-app browser."
+        );
+      }
+
+      sessionStorage.setItem(reloadKey, String(reloads + 1));
+      setStatus("Finishing browser setup, reloading once...");
+      location.reload();
+      return;
+    }
+
+    sessionStorage.removeItem(reloadKey);
+
+    const missing = [];
+    if (!globalThis.SharedArrayBuffer) missing.push("SharedArrayBuffer");
+    if (!globalThis.OffscreenCanvas) missing.push("OffscreenCanvas");
+    if (!navigator.storage?.getDirectory) missing.push("OPFS storage");
+    if (!globalThis.Worker) missing.push("Web Workers");
+
+    if (missing.length) {
+      throw new Error(`Unsupported browser: missing ${missing.join(", ")}`);
+    }
+
+    supported = true;
+    setStatus("Browser ready", "ready");
+    updateFiles();
+    await Promise.all([updateStorage(), refreshSavedDisk()]);
+  } catch (error) {
+    console.error(error);
+    supported = false;
+    setStatus(`Browser setup failed: ${error.message || error}`, "error");
     elements.hint.textContent =
-      "Use a current Chromium-based browser. Firefox isn't reliable with this graphical QEMU build.";
-    return;
+      "Open this page directly in a current Chromium-based browser. Embedded app browsers may block the VM features.";
+    updateStartButton();
   }
-
-  supported = true;
-  setStatus("Browser ready", "ready");
-  updateFiles();
-  await Promise.all([updateStorage(), refreshSavedDisk()]);
 }
 
 elements.preset.addEventListener("change", updatePreset);
