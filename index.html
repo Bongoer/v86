@@ -128,7 +128,29 @@
     </section>
   </main>
 
-  <script src="./coi-serviceworker.js"></script>
-  <script type="module" src="./app.js"></script>
+  <script>
+    (() => {
+      const showStartupFailure = (message) => {
+        const status = document.getElementById("status");
+        const light = document.getElementById("status-light");
+        if (!status || globalThis.__v64AppStarted) return;
+        status.textContent = `Startup failed: ${message}`;
+        light.className = "status-light error";
+      };
+
+      addEventListener("error", (event) => {
+        showStartupFailure(event.message || "the browser blocked app.js");
+      });
+      addEventListener("unhandledrejection", (event) => {
+        showStartupFailure(event.reason?.message || event.reason || "unknown error");
+      });
+      setTimeout(() => {
+        showStartupFailure(
+          "app.js didn't run. Open the site directly in Chrome and reload."
+        );
+      }, 4000);
+    })();
+  </script>
+  <script src="./app.js"></script>
 </body>
 </html>
